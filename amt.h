@@ -291,19 +291,19 @@ public:
         insert(ilist.begin(), ilist.end());
     }
 
-    template<class... Args>
+    template <class... Args>
     std::pair<iterator, bool> emplace(Args&&... args) 
     {
         return insert(value_type(std::forward<Args>(args)...));
     }
     
-    template<class... Args>
+    template <class... Args>
     iterator emplace_hint(const_iterator hint, Args&&... args) 
     {
         return insert(hint, value_type(std::forward<Args>(args)...));        
     }
     
-    template<class Key, class... Args>
+    template <class Key, class... Args>
     std::pair<iterator, bool> try_emplace(Key&& key, Args&&... args) 
     {
         return insert_impl(key, std::piecewise_construct, 
@@ -311,7 +311,7 @@ public:
                                 std::forward_as_tuple(std::forward<Args>(args)...));
     }
     
-    template<class Key, class... Args>
+    template <class Key, class... Args>
     iterator try_emplace(const_iterator hint, Key&& key, Args&&... args) 
     { 
         return try_emplace(std::forward<Key>(key), std::forward<Args>(args)...).first;
