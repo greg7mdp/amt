@@ -43,12 +43,342 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <array>
 #include <utility>
 #include <type_traits>
 #include <cassert>
 
-namespace amt {
+namespace amt_   // internal namespace
+{
 
+// ---------------------------------------------------------------------------
+// popcount stuff
+// ---------------------------------------------------------------------------
+static inline uint32_t s_amt_popcount_default(uint32_t i) noexcept
+{
+    i = i - ((i >> 1) & 0x55555555);
+    i = (i & 0x33333333) + ((i >> 2) & 0x33333333);
+    return (((i + (i >> 4)) & 0x0F0F0F0F) * 0x01010101) >> 24;
+}
+
+static inline uint32_t s_amt_popcount_default(uint64_t x) noexcept
+{
+    const uint64_t m1  = uint64_t(0x5555555555555555); // binary: 0101...
+    const uint64_t m2  = uint64_t(0x3333333333333333); // binary: 00110011..
+    const uint64_t m4  = uint64_t(0x0f0f0f0f0f0f0f0f); // binary:  4 zeros,  4 ones ...
+    const uint64_t h01 = uint64_t(0x0101010101010101); // the sum of 256 to the power of 0,1,2,3...
+
+    x -= (x >> 1) & m1;             // put count of each 2 bits into those 2 bits
+    x = (x & m2) + ((x >> 2) & m2); // put count of each 4 bits into those 4 bits 
+    x = (x + (x >> 4)) & m4;        // put count of each 8 bits into those 8 bits 
+    return (x * h01)>>56;           // returns left 8 bits of x + (x<<8) + (x<<16) + (x<<24)+...
+}
+
+#if defined __clang__
+
+    #if defined(i386)
+        #include <cpuid.h>
+        inline void amt_cpuid(int info[4], int InfoType) {
+            __cpuid_count(InfoType, 0, info[0], info[1], info[2], info[3]);
+        }
+    #endif
+
+    #define AMT_POPCNT   __builtin_popcount
+    #define AMT_POPCNT64 __builtin_popcountll
+
+#elif defined __GNUC__
+
+    #if defined(i386)
+        #include <cpuid.h>
+        inline void amt_cpuid(int info[4], int InfoType) {
+            __cpuid_count(InfoType, 0, info[0], info[1], info[2], info[3]);
+        }
+    #endif
+
+    // __POPCNT__ defined when the compiled with popcount support
+    // (-mpopcnt compiler option is given for example)
+    #ifdef __POPCNT__
+        // slower unless compiled iwith -mpopcnt
+        #define AMT_POPCNT   __builtin_popcount
+        #define AMT_POPCNT64 __builtin_popcountll
+    #endif
+
+
+#elif defined _MSC_VER
+
+    #include <intrin.h>                     // for __popcnt()
+
+    #define AMT_POPCNT_CHECK  // slower when defined, but we have to check!
+    #define amt_cpuid(info, x)    __cpuid(info, x)
+
+    #define AMT_POPCNT __popcnt
+    #if (INTPTR_MAX == INT64_MAX)
+        #define AMT_POPCNT64 __popcnt64
+    #endif
+
+#endif
+
+#if defined(AMT_POPCNT_CHECK)
+static inline bool amt_popcount_check()
+{
+    int cpuInfo[4] = { -1 };
+    amt_cpuid(cpuInfo, 1);
+    if (cpuInfo[2] & (1 << 23))
+        return true;   // means AMT_POPCNT supported
+    return false;
+}
+#endif
+
+#if defined(AMT_POPCNT_CHECK) && defined(AMT_POPCNT)
+
+static inline uint32_t amt_popcount(uint32_t i)
+{
+    static const bool s_ok = amt_popcount_check();
+    return s_ok ? AMT_POPCNT(i) : s_amt_popcount_default(i);
+}
+
+#else
+
+static inline uint32_t amt_popcount(uint32_t i)
+{
+#if defined(AMT_POPCNT)
+    return static_cast<uint32_t>(AMT_POPCNT(i));
+#else
+    return s_amt_popcount_default(i);
+#endif
+}
+
+#endif
+
+// --------------------------------------------------------------------------
+// --------------------------------------------------------------------------
+template <class K, class V, uint32_t N>  
+class sparsegroup
+{
+    using bm_type   = uint16_t;
+    using size_type = uint8_t;
+    using group     = sparsegroup<K, V, N>;
+    using group_ptr = group *;
+    using leaf_group_ptr = V;
+
+public:
+    struct locator
+    {
+        locator(sparsegroup *g, uint32_t idx) :
+             _group(g), _idx(idx)
+        {}
+
+        sparsegroup   *_group;
+        uint32_t       _idx;
+    };
+
+    struct insert_locator : public locator
+    {
+        insert_locator(sparsegroup *g, uint32_t idx, bool created) :
+            locator(g, idx), _created(created)
+        {}
+
+        bool _created;
+    };
+
+    sparsegroup(sparsegroup *parent, uint32_t depth, K partial_key) :
+        _bitmap(0),
+        _num_val(0),
+        _num_alloc(N),
+        _depth(depth),
+        _partial_key(partial_key),
+        _parent(parent)
+    {
+    }
+
+    K        partial_key() const { return _partial_key; }
+    bool     is_leaf() const     { return _depth == max_depth; }
+    uint32_t depth()             { return _depth; }
+    
+
+    void shrink()
+    {
+        assert(is_leaf() && _parent);
+        if (_num_alloc - _num_val <= 1)
+            return;
+        resize(_num_val);
+    }
+
+    void swap(sparsegroup &o)
+    {
+        using std::swap;
+        for (uint32_t i=0; i<_num_val; ++i)
+           swap(_values[i], o._values[i]);
+
+        // swap _num_val
+        uint32_t tmp = _num_val;
+        _num_val = o._num_val;
+        o._num_val = tmp;
+    }
+
+    void resize(uint32_t sz)
+    {
+        if (_depth == 0)
+            return; // don't resize root sparsegroup as we can't update the parent
+        assert(sz >= _num_val);
+        group_ptr grp = allocate_group(sz, _parent, _depth, _partial_key);
+        grp->_bitmap = _bitmap;
+
+        if (is_leaf())
+            reinterpret_cast<leaf_group_ptr>(this)->swap(*reinterpret_cast<leaf_group_ptr>(grp));
+        else
+            this->swap(*grp);
+
+        size_type parent_idx = _parent->_nibble(_partial_key);
+        assert((group_ptr)_parent->get_value(parent_idx) == this);
+        _parent->set_value(parent_idx, (V)grp);
+        
+        deallocate_group();
+    }
+
+    locator begin() const
+    {
+        assert(0); // todo
+        return { nullptr, 0 };
+    }
+        
+    locator find(K key) const
+    {
+        size_type n = _nibble(key);
+
+        if (_bmtest(n)) 
+        {
+            // found it
+            size_type offset = _pos_to_offset(n);
+            if (_depth == max_depth)
+                return { this, offset };
+            else
+                return reinterpret_cast<group_ptr>(_values[offset])->find(key);
+        }
+        else
+            return { nullptr, 0 };
+    }
+
+    insert_locator find_or_prepare_insert(K key)
+    {
+        size_type n = _nibble(key);
+
+        if (_bmtest(n)) // found it
+        {
+            size_type offset = _pos_to_offset(n);
+            if (_depth == max_depth)
+                return insert_locator(this, offset, false);
+            else
+                return reinterpret_cast<group_ptr>(_values[offset])->find_or_prepare_insert(key);
+        }
+        else
+        {
+            // need to insert
+            
+            
+        }
+            
+        
+        
+        return { nullptr, 0, false };
+    }
+
+    bool match(K key) const 
+    {
+        assert(_depth == max_depth); // we are matching only leaf groups
+        return (key & ~bm_mask) == _partial_key;
+    }
+
+    template <class Val>
+    void set_value(uint32_t idx, Val &&v)
+    {
+        _values[idx] = std::forward<Val>(v);
+    }
+
+    V& get_value(uint32_t idx)
+    {
+        return _values[idx];
+    }
+    
+    static group_ptr allocate_group(uint32_t cnt, sparsegroup *parent, uint32_t depth, K partial_key)
+    {
+        bool leaf = (depth == max_depth);
+        if (!leaf)
+            ; // init allocated pointers to nullptr
+    }
+
+    // deallocates the group and all its children
+    void deallocate_group()
+    {
+        bool leaf = (_depth == max_depth);
+        if (leaf)
+            reinterpret_cast<leaf_group_ptr>(this)->deallocate_leaf();
+        else
+        {
+            for (uint32_t i=0; i<_num_val; ++i)
+                reinterpret_cast<group_ptr>(_values[i])->deallocate_group();
+            free(this);
+        }
+            
+    }
+
+    void deallocate_leaf()
+    {
+        for (uint32_t i=0; i<_num_val; ++i)
+            _values[i].~V();
+        free(this);
+    }
+    
+private:
+
+    bool _bmtest(size_type i) const   { return !!(_bitmap & (static_cast<uint32_t>(1) << i)); }
+    void _bmset(size_type i)          { _bitmap |= static_cast<uint32_t>(1) << i; }
+    void _bmclear(size_type i)        { _bitmap &= ~(static_cast<uint32_t>(1) << i); }
+
+    size_type _pos_to_offset(size_type pos)
+    {
+        return static_cast<size_type>(amt_popcount(_bitmap & ((static_cast<uint32_t>(1) << pos) - 1)));
+    }
+
+    size_type _offset_to_pos(size_type offset)
+    {
+        uint32_t bm = _bitmap;
+
+        for (; offset > 0; offset--)
+            bm &= (bm-1);  // remove right-most set bit
+
+        // Clear all bits to the left of the rightmost bit (the &),
+        // and then clear the rightmost bit but set all bits to the
+        // right of it (the -1).
+        // --------------------------------------------------------
+        bm = (bm & -bm) - 1;
+        return  static_cast<size_type>(amt_popcount(bm));
+    }
+
+    size_type _nibble(K key) 
+    {
+        return (size_type)((key >> ((max_depth - _depth) * bm_shift)) & bm_mask);
+    }
+
+    static constexpr const uint32_t bm_shift = 4;
+    static constexpr const uint32_t bm_mask  = 0xF;
+    static constexpr const uint32_t max_depth = (sizeof(K) * 8) / bm_shift - 1;
+    
+    uint32_t     _bitmap : 16;
+    uint32_t     _num_val : 5;
+    uint32_t     _num_alloc : 5;
+    uint32_t     _depth : 6;
+    K            _partial_key;  // only highest bits 0 -> 4 * depth are set
+    group_ptr    _parent;
+    V            _values[N];
+};
+
+
+}; // amt_
+
+namespace amt
+{
+using namespace amt_;
 
 // -----------------------------------------------------------------------------
 // An Array Mapped Tree (amt) is an ordered associative container which mapping 
@@ -62,6 +392,15 @@ namespace amt {
 template <class K, class V> 
 class amt 
 {
+    using leaf_group     = sparsegroup<K, V, 1>;
+    using leaf_group_ptr = leaf_group *;
+
+    using group          = sparsegroup<K, leaf_group_ptr, 1>;
+    using group_ptr      = group *;
+
+    using locator        = typename group::locator;
+    using insert_locator = typename group::insert_locator;
+
 public:
 
     static_assert(std::is_integral<K>::value && std::is_unsigned<K>::value &&
@@ -69,17 +408,21 @@ public:
 
     static bool _equal(const K &a, const K &b) { return a == b; }
     
-    using key_type    = K;
-    using value_type  = std::pair<const K, const V>;
-    using mapped_type = V;
-    using size_type   = std::size_t;
+    using key_type        = K;
+    using value_type      = std::pair<const K, const V>;
+    using mapped_type     = V;
+    using size_type       = std::size_t;
     using difference_type = std::ptrdiff_t;
-    using key_equal   = std::equal_to<K>;
+    using key_equal       = std::equal_to<K>;
+
 
     // --------------------- iterator ---------------------------------------
     class iterator 
     {
         friend class amt;
+        using group_ptr         = typename amt::group_ptr;
+        using leaf_group_ptr    = typename amt::leaf_group_ptr;
+        using locator           = typename amt::locator;
 
     public:
         using iterator_category = std::forward_iterator_tag;
@@ -90,9 +433,13 @@ public:
         using const_pointer     = const value_type *;
         using difference_type   = typename amt::difference_type;
 
-        iterator() {}
+        iterator(group_ptr group = nullptr, uint32_t idx = 0) : 
+            _group(group), _idx(idx) 
+        {
+            assert(!_group || _group->is_leaf());
+        }
 
-        reference operator*() const { assert(0); }
+        reference operator*() const { return _v; }
 
         pointer operator->() const { return &operator*(); }
 
@@ -111,8 +458,7 @@ public:
 
         friend bool operator==(const iterator& a, const iterator& b) 
         {
-            assert(0);
-            return false;
+            return a._group == b._group && a._idx == b._idx;
         }
 
         friend bool operator!=(const iterator& a, const iterator& b) 
@@ -121,9 +467,13 @@ public:
         }
 
     private:
+
+        group_ptr _group;
+        uint32_t  _idx;
+
         // anonymous union to avoid uninitialized member warnings
         union {
-            value_type v;
+            value_type _v;
         };
     };
 
@@ -167,7 +517,13 @@ public:
     };
     
     // --------------------- constructors -----------------------------------
-    amt() noexcept {}
+    amt() noexcept :
+        _last(nullptr),
+        _root(nullptr),
+        _size(0)
+    {
+        _init();
+    }
     
     template <class InputIter>
     amt(InputIter first, InputIter last) : amt() 
@@ -178,14 +534,14 @@ public:
     amt(std::initializer_list<value_type> init) : amt(init.begin(), init.end())
     {}
 
-    amt(const amt &o)
+    amt(const amt &o) : amt() 
     {
         assert(0); //todo
     }
 
-    amt(amt &&o) noexcept
+    amt(amt &&o) noexcept : amt() 
     {
-        assert(0); //todo
+        swap(o);
     }
 
     amt& operator=(const amt &o)
@@ -205,22 +561,19 @@ public:
     // --------------------- desstructor -----------------------------------
     ~amt()
     {
-        assert(0); //todo
+        _cleanup();
     }
 
     // --------------------- apis ------------------------------------------
     iterator begin() 
     {
-        iterator it;
-        assert(0); //todo
-        return it;
+        auto loc = _root->begin();
+        return iterator(loc._group, loc._idx);
     }
     
     iterator end() 
     {
-        iterator it;
-        assert(0); //todo
-        return it; 
+        return iterator(nullptr, 0); 
     }
 
     const_iterator begin() const  { return const_cast<amt *>(this)->begin();  }
@@ -235,7 +588,8 @@ public:
 
     void clear()
     {
-        assert(0); //todo
+        _cleanup();
+        _init();
     }
 
     // ------------------------------------ erase ------------------------------
@@ -270,7 +624,8 @@ public:
     template <class VT>
     std::pair<iterator, bool> insert(VT&& value) 
     {
-        return insert_impl(value.first, std::forward<VT>(value));
+        auto loc = insert_impl(value.first, value.second);
+        return { iterator(loc._group, loc._idx), loc._created };
     }
 
     template <class VT>
@@ -306,9 +661,10 @@ public:
     template <class Key, class... Args>
     std::pair<iterator, bool> try_emplace(Key&& key, Args&&... args) 
     {
-        return insert_impl(key, std::piecewise_construct, 
+        auto loc =  insert_impl(key, std::piecewise_construct, 
                                 std::forward_as_tuple(std::forward<Key>(key)), 
                                 std::forward_as_tuple(std::forward<Args>(args)...));
+        return { iterator(loc._group, loc._idx), loc._created };
     }
     
     template <class Key, class... Args>
@@ -368,9 +724,6 @@ public:
     }
 
 #if 0
-    emplace;
-    emplace_hint;
-    try_emplace;
     extract;
     merge;
 #endif
@@ -378,25 +731,24 @@ public:
     void reserve(size_type count) {}
     void rehash(size_type count) {}
 
-    void swap(amt& other) noexcept
+    void swap(amt& o) noexcept
     {
-        assert(0); //todo
+        std::swap(_root, o._root);
+        std::swap(_last, o._last);
+        std::swap(_size, o._size);
     }
 
     V& at(const key_type& key)
     {
-        auto it = this->find(key);
-        if (it == this->end()) 
+        auto loc = this->find_impl(key);
+        if (!loc._group) 
             throw std::out_of_range("amt at(): lookup non-existent key");
-        return *it;
+        return reinterpret_cast<leaf_group_ptr>(loc._group)->get_value(loc._idx);;
     }
 
     const V& at(const key_type& key) const
     {
-        auto it = this->find(key);
-        if (it == this->end()) 
-            throw std::out_of_range("amt at(): lookup non-existent key");
-        return *it;
+        return const_cast<amt *>(this)->at(key);
     }
 
     bool contains(const key_type& key) const
@@ -427,9 +779,8 @@ public:
 
     iterator find(const key_type& key)
     {
-        iterator it;
-        assert(0); //todo
-        return it;
+        auto loc = find_impl(key);
+        return iterator(loc._group, loc._idx);
     }
 
     const_iterator find(const key_type& key) const
@@ -439,9 +790,8 @@ public:
 
     mapped_type& operator[](const key_type& key)
     {
-        iterator it;
-        assert(0); //todo
-        return *it;
+        auto loc = insert_impl(key);
+        return reinterpret_cast<leaf_group_ptr>(loc._group)->get_value(loc._idx);
     }
 
     size_type bucket_count() const { return _size; } // not meaningful for amt
@@ -452,14 +802,44 @@ public:
     key_equal key_eq() const { return std::equal_to<K>(); }
 
 private:
-    template <class Key, class Val>
-    std::pair<iterator, bool> insert_impl(Key&& k, Val&& v) 
+    void _init()
     {
+        assert(_root == nullptr);
+        _root = group::allocate_group(16, nullptr, 0, 0);
     }
 
-    template <class Key = key_type, class... Args>
-    std::pair<iterator, bool> try_emplace_impl(Key&& k, Args&&... args) 
+    void _cleanup()
     {
+        _root->deallocate_group();
+        _root = nullptr;
+        _last = nullptr;
+        _size = 0;
+    }
+
+    locator find_impl(const key_type& k)
+    {
+        bool last_matches = _last && _last->match(k);
+        return last_matches ? _last->find(k) : _root->find(k);
+    }
+   
+    template <class Key, class Val>
+    insert_locator insert_impl(Key&& k, Val&& v, bool force_insert = false) 
+    {
+        bool last_matches = _last && _last->match(k);
+
+        auto loc = last_matches ? _last->find_or_prepare_insert(k) : _root->find_or_prepare_insert(k);
+        if (loc._created || force_insert)
+        {
+            reinterpret_cast<leaf_group_ptr>(loc._group)->set_value(loc._idx,  std::forward<Val>(v));
+            ++_size;
+        }
+        if (!last_matches)
+        {
+            if (_last)
+                _last->shrink();
+            _last = loc._group;
+        }
+        return loc;
     }
 
     void _erase(iterator it) 
@@ -473,8 +853,12 @@ private:
     {
         _erase(cit._it);
     }
+    
+    friend class iterator;
 
-    size_type _size;
+    group_ptr      _last;  // always a leaf if set
+    group_ptr      _root;  // never a leaf
+    size_type      _size;
 };
 
 
