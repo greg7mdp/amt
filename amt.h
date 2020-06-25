@@ -151,15 +151,18 @@ static inline uint32_t amt_popcount(uint32_t i)
 #endif
 
 // --------------------------------------------------------------------------
+// for leaves, SV and V are the same
+// for non-leaves, SV is a sparsegroup *, and V is the actual amt mapped_type
 // --------------------------------------------------------------------------
-template <class K, class V, uint32_t N>  
+template <class K, class SV, class V, uint32_t N>  
 class sparsegroup
 {
-    using bm_type   = uint16_t;
-    using size_type = uint8_t;
-    using group     = sparsegroup<K, V, N>;
-    using group_ptr = group *;
-    using leaf_group_ptr = V;
+    using bm_type    = uint16_t;
+    using size_type  = uint8_t;
+    using group      = sparsegroup<K, SV, V, N>;
+    using group_ptr  = group *;
+    using leaf_group = sparsegroup<K, V, V, N>;
+    using leaf_group_ptr = SV;
 
 public:
     struct locator
@@ -231,7 +234,7 @@ public:
 
         size_type parent_idx = _parent->_nibble(_partial_key);
         assert((group_ptr)_parent->get_value(parent_idx) == this);
-        _parent->set_value(parent_idx, (V)grp);
+        _parent->set_value(parent_idx, (SV)grp);
         
         deallocate_group();
     }
@@ -295,16 +298,35 @@ public:
         _values[idx] = std::forward<Val>(v);
     }
 
-    V& get_value(uint32_t idx)
+    SV& get_value(uint32_t idx)
     {
         return _values[idx];
     }
     
-    static group_ptr allocate_group(uint32_t cnt, sparsegroup *parent, uint32_t depth, K partial_key)
+    static group_ptr allocate_group(uint32_t cnt, group_ptr parent, uint32_t depth, K partial_key)
     {
         bool leaf = (depth == max_depth);
         if (!leaf)
-            ; // init allocated pointers to nullptr
+        {
+            group_ptr grp = (group_ptr)malloc(group_size_in_bytes<SV>(cnt));
+            new (grp) group(parent, depth, partial_key);
+            for (uint32_t i=0; i<cnt; ++i)
+                grp->_values[i] = nullptr;
+            return grp;
+        }
+        else
+        {
+            leaf_group_ptr grp = (leaf_group_ptr)malloc(group_size_in_bytes<V>(cnt));
+            new (grp) leaf_group((leaf_group_ptr)parent, depth, partial_key);
+            grp->construct_values();
+            return (group_ptr)grp;
+        }
+    }
+
+    void construct_values()
+    {
+        for (uint32_t i=0; i<_num_val; ++i)
+            new (&_values[i]) SV();
     }
 
     // deallocates the group and all its children
@@ -319,7 +341,6 @@ public:
                 reinterpret_cast<group_ptr>(_values[i])->deallocate_group();
             free(this);
         }
-            
     }
 
     void deallocate_leaf()
@@ -334,6 +355,14 @@ private:
     bool _bmtest(size_type i) const   { return !!(_bitmap & (static_cast<uint32_t>(1) << i)); }
     void _bmset(size_type i)          { _bitmap |= static_cast<uint32_t>(1) << i; }
     void _bmclear(size_type i)        { _bitmap &= ~(static_cast<uint32_t>(1) << i); }
+
+    template <class Val>
+    static size_t group_size_in_bytes(uint32_t cnt)   
+    {
+        assert(cnt >= 1);
+        size_t x = sizeof(group) + (cnt - 1) * sizeof(Val);
+        return (x + 0xF) & ~0xF;
+    }
 
     size_type _pos_to_offset(size_type pos)
     {
@@ -370,7 +399,7 @@ private:
     uint32_t     _depth : 6;
     K            _partial_key;  // only highest bits 0 -> 4 * depth are set
     group_ptr    _parent;
-    V            _values[N];
+    SV           _values[N];
 };
 
 
@@ -392,10 +421,10 @@ using namespace amt_;
 template <class K, class V> 
 class amt 
 {
-    using leaf_group     = sparsegroup<K, V, 1>;
+    using leaf_group     = sparsegroup<K, V, V, 1>;
     using leaf_group_ptr = leaf_group *;
 
-    using group          = sparsegroup<K, leaf_group_ptr, 1>;
+    using group          = sparsegroup<K, leaf_group_ptr, V, 1>;
     using group_ptr      = group *;
 
     using locator        = typename group::locator;
@@ -518,7 +547,8 @@ public:
     
     // --------------------- constructors -----------------------------------
     amt() noexcept :
-        _last(nullptr),
+        _last_insert(nullptr),
+        _last_lookup(nullptr),
         _root(nullptr),
         _size(0)
     {
@@ -734,7 +764,8 @@ public:
     void swap(amt& o) noexcept
     {
         std::swap(_root, o._root);
-        std::swap(_last, o._last);
+        std::swap(_last_insert, o._last_insert);
+        std::swap(_last_lookup, o._last_lookup);
         std::swap(_size, o._size);
     }
 
@@ -812,22 +843,27 @@ private:
     {
         _root->deallocate_group();
         _root = nullptr;
-        _last = nullptr;
+        _last_insert = nullptr;
+        _last_lookup = nullptr;
         _size = 0;
     }
 
     locator find_impl(const key_type& k)
     {
-        bool last_matches = _last && _last->match(k);
-        return last_matches ? _last->find(k) : _root->find(k);
+        bool last_matches = _last_lookup && _last_lookup->match(k);
+        if (last_matches)
+            return _last_lookup->find(k);
+        auto loc = _root->find(k);
+        _last_lookup = loc._group;
+        return loc;
     }
    
     template <class Key, class Val>
     insert_locator insert_impl(Key&& k, Val&& v, bool force_insert = false) 
     {
-        bool last_matches = _last && _last->match(k);
+        bool last_matches = _last_insert && _last_insert->match(k);
 
-        auto loc = last_matches ? _last->find_or_prepare_insert(k) : _root->find_or_prepare_insert(k);
+        auto loc = last_matches ? _last_insert->find_or_prepare_insert(k) : _root->find_or_prepare_insert(k);
         if (loc._created || force_insert)
         {
             reinterpret_cast<leaf_group_ptr>(loc._group)->set_value(loc._idx,  std::forward<Val>(v));
@@ -835,9 +871,9 @@ private:
         }
         if (!last_matches)
         {
-            if (_last)
-                _last->shrink();
-            _last = loc._group;
+            if (_last_insert)
+                _last_insert->shrink();
+            _last_insert = loc._group;
         }
         return loc;
     }
@@ -856,7 +892,8 @@ private:
     
     friend class iterator;
 
-    group_ptr      _last;  // always a leaf if set
+    group_ptr      _last_insert;  // always a leaf if set
+    group_ptr      _last_lookup;  // always a leaf if set
     group_ptr      _root;  // never a leaf
     size_type      _size;
 };
