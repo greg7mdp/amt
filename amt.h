@@ -167,18 +167,19 @@ class sparsegroup
 public:
     struct locator
     {
-        locator(sparsegroup *g, uint32_t idx) :
-             _group(g), _idx(idx)
+        locator(sparsegroup *g, K key, uint32_t idx) :
+            _group(g), _key(key), _idx(idx)
         {}
 
         sparsegroup   *_group;
+        K              _key;
         uint32_t       _idx;
     };
 
     struct insert_locator : public locator
     {
-        insert_locator(sparsegroup *g, uint32_t idx, bool created) :
-            locator(g, idx), _created(created)
+        insert_locator(sparsegroup *g, K key, uint32_t idx, bool created) :
+            locator(g, key, idx), _created(created)
         {}
 
         bool _created;
@@ -243,7 +244,7 @@ public:
     locator begin() const
     {
         assert(0); // todo
-        return { nullptr, 0 };
+        return { nullptr, 0, 0 };
     }
         
     locator find(K key) const
@@ -255,12 +256,12 @@ public:
             // found it
             uint32_t idx = _pos_to_idx(n);
             if (_depth == max_depth)
-                return { const_cast<sparsegroup *>(this), idx };
+                return { const_cast<sparsegroup *>(this), key, idx };
             else
                 return reinterpret_cast<group_ptr>(_values[idx])->find(key);
         }
         else
-            return { nullptr, 0 };
+            return { nullptr, 0, 0 };
     }
 
     insert_locator find_or_prepare_insert(K key)
@@ -271,7 +272,7 @@ public:
         {
             size_type idx = _pos_to_idx(n);
             if (_depth == max_depth)
-                return { this, idx, false };
+                return { this, key, idx, false };
             else
                 return reinterpret_cast<group_ptr>(_values[idx])->find_or_prepare_insert(key);
         }
@@ -294,7 +295,7 @@ public:
             {
                 reinterpret_cast<leaf_group_ptr>(this)->prepare_for_insert(idx); 
                 ++_num_val;
-                return { this, idx, true };
+                return { this, key, idx, true };
             }
             else
             {
@@ -303,7 +304,7 @@ public:
                 return reinterpret_cast<group_ptr>(_values[idx])->find_or_prepare_insert(key);
             }
         }
-        return { nullptr, 0, false };
+        return { nullptr, 0, 0, false };
     }
 
     bool match(K key) const 
@@ -502,16 +503,19 @@ public:
     public:
         using iterator_category = std::forward_iterator_tag;
         using value_type        = typename amt::value_type;
+        using key_type          = typename amt::key_type;
+        using mapped_type       = typename amt::mapped_type;
         using reference         = value_type&;
         using const_reference   = const value_type&;
         using pointer           = value_type *;
         using const_pointer     = const value_type *;
         using difference_type   = typename amt::difference_type;
 
-        iterator(group_ptr group = nullptr, uint32_t idx = 0) : 
-            _group(group), _idx(idx) 
+        iterator(const locator &loc) : 
+            _group(loc._group), _idx(loc._idx) 
         {
             assert(!_group || _group->is_leaf());
+            _set_vt(loc._key);
         }
 
         reference operator*() const { return _v; }
@@ -542,6 +546,15 @@ public:
         }
 
     private:
+        void _set_vt(K key)
+        {
+            if (_group)
+            {
+                assert(_group->is_leaf());
+                *const_cast<key_type *>(&_v.first) = key;
+                *const_cast<mapped_type *>(&_v.second) = reinterpret_cast<leaf_group_ptr>(_group)->get_value(_idx);
+            }
+        }
 
         group_ptr _group;
         uint32_t  _idx;
@@ -644,12 +657,12 @@ public:
     iterator begin() 
     {
         auto loc = _root->begin();
-        return iterator(loc._group, loc._idx);
+        return iterator(loc);
     }
     
     iterator end() 
     {
-        return iterator(nullptr, 0); 
+        return iterator(nullptr, 0, 0); 
     }
 
     const_iterator begin() const  { return const_cast<amt *>(this)->begin();  }
@@ -701,7 +714,7 @@ public:
     std::pair<iterator, bool> insert(VT&& value) 
     {
         auto loc = insert_impl(value.first, value.second);
-        return { iterator(loc._group, loc._idx), loc._created };
+        return { iterator(loc), loc._created };
     }
 
     template <class VT>
@@ -740,7 +753,7 @@ public:
         auto loc =  insert_impl(key, std::piecewise_construct, 
                                 std::forward_as_tuple(std::forward<Key>(key)), 
                                 std::forward_as_tuple(std::forward<Args>(args)...));
-        return { iterator(loc._group, loc._idx), loc._created };
+        return { iterator(loc), loc._created };
     }
     
     template <class Key, class... Args>
@@ -857,7 +870,7 @@ public:
     iterator find(const key_type& key)
     {
         auto loc = find_impl(key);
-        return iterator(loc._group, loc._idx);
+        return iterator(loc);
     }
 
     const_iterator find(const key_type& key) const
