@@ -159,7 +159,7 @@ class sparsegroup
 {
     using bm_type    = uint16_t;
     using size_type  = uint8_t;
-    using group      = sparsegroup<K, SV, V, N>;
+    using group      = sparsegroup;
     using group_ptr  = group *;
     using leaf_group = sparsegroup<K, V, V, N>;
     using leaf_group_ptr = SV;
@@ -184,12 +184,12 @@ public:
         bool _created;
     };
 
-    sparsegroup(sparsegroup *parent, uint32_t depth, K partial_key) :
+    sparsegroup(sparsegroup *parent, uint32_t depth, uint32_t num_alloc, K key) :
         _bitmap(0),
         _num_val(0),
-        _num_alloc(N),
+        _num_alloc(num_alloc),
         _depth(depth),
-        _partial_key(partial_key),
+        _partial_key(_make_partial(key)),
         _parent(parent)
     {
     }
@@ -219,10 +219,10 @@ public:
         o._num_val = tmp;
     }
 
-    void resize(uint32_t sz)
+    group_ptr resize(uint32_t sz)
     {
         if (_depth == 0)
-            return; // don't resize root sparsegroup as we can't update the parent
+            return nullptr; // don't resize root sparsegroup as we can't update the parent
         assert(sz >= _num_val);
         group_ptr grp = allocate_group(sz, _parent, _depth, _partial_key);
         grp->_bitmap = _bitmap;
@@ -237,6 +237,7 @@ public:
         _parent->set_value(parent_idx, (SV)grp);
         
         deallocate_group();
+        return grp;
     }
 
     locator begin() const
@@ -252,11 +253,11 @@ public:
         if (_bmtest(n)) 
         {
             // found it
-            size_type offset = _pos_to_offset(n);
+            uint32_t idx = _pos_to_idx(n);
             if (_depth == max_depth)
-                return { this, offset };
+                return { const_cast<sparsegroup *>(this), idx };
             else
-                return reinterpret_cast<group_ptr>(_values[offset])->find(key);
+                return reinterpret_cast<group_ptr>(_values[idx])->find(key);
         }
         else
             return { nullptr, 0 };
@@ -268,21 +269,40 @@ public:
 
         if (_bmtest(n)) // found it
         {
-            size_type offset = _pos_to_offset(n);
+            size_type idx = _pos_to_idx(n);
             if (_depth == max_depth)
-                return insert_locator(this, offset, false);
+                return { this, idx, false };
             else
-                return reinterpret_cast<group_ptr>(_values[offset])->find_or_prepare_insert(key);
+                return reinterpret_cast<group_ptr>(_values[idx])->find_or_prepare_insert(key);
         }
         else
         {
             // need to insert
-            
-            
+            if (_num_val >= _num_alloc)
+            {
+                // need to resize
+                assert(_depth > 0);
+                uint32_t new_size = _num_alloc + 1;
+                new_size = (new_size + 1) & ~0x1;
+                assert(new_size <= 16);
+                group_ptr grp = resize(new_size);
+                return grp->find_or_prepare_insert(key);;
+            }
+            size_type idx = _pos_to_idx(n);
+            _bmset(n);
+            if (is_leaf())
+            {
+                reinterpret_cast<leaf_group_ptr>(this)->prepare_for_insert(idx); 
+                ++_num_val;
+                return { this, idx, true };
+            }
+            else
+            {
+                prepare_for_insert(idx);
+                _values[idx] = (SV)allocate_group(_depth + 1 == max_depth ? 16 : 1, this, _depth + 1, key);
+                return reinterpret_cast<group_ptr>(_values[idx])->find_or_prepare_insert(key);
+            }
         }
-            
-        
-        
         return { nullptr, 0, false };
     }
 
@@ -303,31 +323,50 @@ public:
         return _values[idx];
     }
     
-    static group_ptr allocate_group(uint32_t cnt, group_ptr parent, uint32_t depth, K partial_key)
+    void set_new_group(uint32_t idx, group_ptr grp)
+    {
+        _values[idx] = grp;
+    }
+
+    static group_ptr allocate_group(uint32_t num_alloc, group_ptr parent, uint32_t depth, K partial_key)
     {
         bool leaf = (depth == max_depth);
         if (!leaf)
         {
-            group_ptr grp = (group_ptr)malloc(group_size_in_bytes<SV>(cnt));
-            new (grp) group(parent, depth, partial_key);
-            for (uint32_t i=0; i<cnt; ++i)
+            group_ptr grp = (group_ptr)malloc(group_size_in_bytes<SV>(num_alloc));
+            new (grp) group(parent, depth, num_alloc, partial_key);
+            for (uint32_t i=0; i<num_alloc; ++i)
                 grp->_values[i] = nullptr;
             return grp;
         }
         else
         {
-            leaf_group_ptr grp = (leaf_group_ptr)malloc(group_size_in_bytes<V>(cnt));
-            new (grp) leaf_group((leaf_group_ptr)parent, depth, partial_key);
-            grp->construct_values();
+            leaf_group_ptr grp = (leaf_group_ptr)malloc(group_size_in_bytes<V>(num_alloc));
+            new (grp) leaf_group((leaf_group_ptr)parent, depth, num_alloc, partial_key);
+            // grp->construct_values();
             return (group_ptr)grp;
         }
+    }
+
+    void construct_value(uint32_t idx)
+    {
+        new (&_values[idx]) SV();
     }
 
     void construct_values()
     {
         for (uint32_t i=0; i<_num_val; ++i)
-            new (&_values[i]) SV();
+            construct_value(i); 
     }
+
+    void prepare_for_insert(uint32_t idx)
+    {
+        assert(_num_val < _num_alloc);
+        construct_value(_num_val);
+        SV *v = &_values[0];
+        std::rotate(v + idx, v + _num_val, v + _num_val + 1);
+    }
+        
 
     // deallocates the group and all its children
     void deallocate_group()
@@ -364,16 +403,18 @@ private:
         return (x + 0xF) & ~0xF;
     }
 
-    size_type _pos_to_offset(size_type pos)
+    // position in bitmap, to index in array of values
+    size_type _pos_to_idx(size_type pos) const
     {
         return static_cast<size_type>(amt_popcount(_bitmap & ((static_cast<uint32_t>(1) << pos) - 1)));
     }
 
-    size_type _offset_to_pos(size_type offset)
+    // index in array of values to position in bitmap
+    size_type _idx_to_pos(size_type idx)
     {
         uint32_t bm = _bitmap;
 
-        for (; offset > 0; offset--)
+        for (; idx > 0; idx--)
             bm &= (bm-1);  // remove right-most set bit
 
         // Clear all bits to the left of the rightmost bit (the &),
@@ -384,9 +425,14 @@ private:
         return  static_cast<size_type>(amt_popcount(bm));
     }
 
-    size_type _nibble(K key) 
+    size_type _nibble(K key) const
     {
         return (size_type)((key >> ((max_depth - _depth) * bm_shift)) & bm_mask);
+    }
+
+    K _make_partial(K key) const
+    {
+        return key & ~((1 << ((max_depth - _depth + 1) * bm_shift)) - 1);
     }
 
     static constexpr const uint32_t bm_shift = 4;
