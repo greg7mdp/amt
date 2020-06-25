@@ -300,6 +300,7 @@ public:
             else
             {
                 prepare_for_insert(idx);
+                ++_num_val;
                 _values[idx] = (SV)allocate_group(_depth + 1 == max_depth ? 16 : 1, this, _depth + 1, key);
                 return reinterpret_cast<group_ptr>(_values[idx])->find_or_prepare_insert(key);
             }
@@ -713,7 +714,9 @@ public:
     template <class VT>
     std::pair<iterator, bool> insert(VT&& value) 
     {
-        auto loc = insert_impl(value.first, value.second);
+        auto loc = insert_impl(value.first);
+        if (loc._created)
+            reinterpret_cast<leaf_group_ptr>(loc._group)->set_value(loc._idx,  std::forward<decltype(VT::second)>(value.second));
         return { iterator(loc), loc._created };
     }
 
@@ -751,8 +754,9 @@ public:
     std::pair<iterator, bool> try_emplace(Key&& key, Args&&... args) 
     {
         auto loc =  insert_impl(key, std::piecewise_construct, 
-                                std::forward_as_tuple(std::forward<Key>(key)), 
-                                std::forward_as_tuple(std::forward<Args>(args)...));
+                                std::forward_as_tuple(std::forward<Key>(key)));
+        if (loc._created)
+            reinterpret_cast<leaf_group_ptr>(loc._group)->set_value(loc._idx,  std::forward_as_tuple(std::forward<Args>(args)...));
         return { iterator(loc), loc._created };
     }
     
@@ -917,15 +921,14 @@ private:
         return loc;
     }
    
-    template <class Key, class Val>
-    insert_locator insert_impl(Key&& k, Val&& v, bool force_insert = false) 
+    template <class Key>
+    insert_locator insert_impl(Key&& k) 
     {
         bool last_matches = _last_insert && _last_insert->match(k);
 
         auto loc = last_matches ? _last_insert->find_or_prepare_insert(k) : _root->find_or_prepare_insert(k);
-        if (loc._created || force_insert)
+        if (loc._created)
         {
-            reinterpret_cast<leaf_group_ptr>(loc._group)->set_value(loc._idx,  std::forward<Val>(v));
             ++_size;
         }
         if (!last_matches)
