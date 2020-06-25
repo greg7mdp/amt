@@ -108,7 +108,8 @@ static inline uint32_t s_amt_popcount_default(uint64_t x) noexcept
 
     #include <intrin.h>                     // for __popcnt()
 
-    #define AMT_POPCNT_CHECK  // slower when defined, but we have to check!
+    // I don't think we have to check!
+    // #define AMT_POPCNT_CHECK  // slower when defined, but we have to check!
     #define amt_cpuid(info, x)    __cpuid(info, x)
 
     #define AMT_POPCNT __popcnt
@@ -284,7 +285,7 @@ public:
                 // need to resize
                 assert(_depth > 0);
                 uint32_t new_size = _num_alloc + 1;
-                new_size = (new_size + 1) & ~0x1;
+                new_size = (new_size + 3) & ~0x3; // multiples of 4... use extra memory for speed
                 assert(new_size <= 16);
                 group_ptr grp = resize(new_size);
                 return grp->find_or_prepare_insert(key);;
@@ -301,7 +302,7 @@ public:
             {
                 prepare_for_insert(idx);
                 ++_num_val;
-                _values[idx] = (SV)allocate_group(_depth + 1 == max_depth ? 16 : 1, this, _depth + 1, key);
+                _values[idx] = (SV)allocate_group(_depth + 1 == max_depth ? 16 : 2, this, _depth + 1, key);
                 return reinterpret_cast<group_ptr>(_values[idx])->find_or_prepare_insert(key);
             }
         }
