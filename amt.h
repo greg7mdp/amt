@@ -163,7 +163,7 @@ class sparsegroup
     using group      = sparsegroup;
     using group_ptr  = group *;
     using leaf_group = sparsegroup<K, V, V, N>;
-    using leaf_group_ptr = SV;
+    using leaf_group_ptr = leaf_group *;
 
 public:
     struct locator
@@ -234,7 +234,8 @@ public:
         else
             this->swap(*grp);
 
-        size_type parent_idx = _parent->_nibble(_partial_key);
+        size_type parent_nibble = _parent->_nibble(_partial_key);
+        size_type parent_idx = _parent->_nibble_to_idx(parent_nibble);
         assert((group_ptr)_parent->get_value(parent_idx) == this);
         _parent->set_value(parent_idx, (SV)grp);
         
@@ -255,7 +256,7 @@ public:
         if (_bmtest(n)) 
         {
             // found it
-            uint32_t idx = _pos_to_idx(n);
+            uint32_t idx = _nibble_to_idx(n);
             if (_depth == max_depth)
                 return { const_cast<sparsegroup *>(this), key, idx };
             else
@@ -265,13 +266,43 @@ public:
             return { nullptr, 0, 0 };
     }
 
+    // returns try if pare
+    void _erase(uint32_t idx)
+    {
+        assert(_num_val > 0 && idx < _num_val);
+        if (_num_val == 1 && _parent)
+        {
+            size_type parent_nibble = _parent->_nibble(_partial_key);
+            size_type parent_idx = _parent->_nibble_to_idx(parent_nibble);
+            assert((group_ptr)_parent->get_value(parent_idx) == this);
+            _parent->_erase(parent_idx);
+        }
+        else
+        {
+            SV *v = &_values[0];
+            _bmclear(_idx_to_nibble(idx));
+            std::rotate(v + idx, v + idx + 1, v + _num_val);
+            if (is_leaf())
+                (v + _num_val - 1)->~SV();
+            else
+                reinterpret_cast<group_ptr>(v + _num_val - 1)->deallocate_group();
+            --_num_val;
+        }
+    }
+
+    void erase(uint32_t idx)
+    {
+        assert(is_leaf());
+        reinterpret_cast<leaf_group_ptr>(this)->_erase(idx);
+    }
+
     insert_locator find_or_prepare_insert(K key)
     {
         size_type n = _nibble(key);
 
         if (_bmtest(n)) // found it
         {
-            size_type idx = _pos_to_idx(n);
+            size_type idx = _nibble_to_idx(n);
             if (_depth == max_depth)
                 return { this, key, idx, false };
             else
@@ -290,7 +321,7 @@ public:
                 group_ptr grp = resize(new_size);
                 return grp->find_or_prepare_insert(key);;
             }
-            size_type idx = _pos_to_idx(n);
+            size_type idx = _nibble_to_idx(n);
             _bmset(n);
             if (is_leaf())
             {
@@ -407,13 +438,18 @@ private:
     }
 
     // position in bitmap, to index in array of values
-    size_type _pos_to_idx(size_type pos) const
+    size_type _nibble_to_idx(size_type nibble) const
     {
-        return static_cast<size_type>(amt_popcount(_bitmap & ((static_cast<uint32_t>(1) << pos) - 1)));
+        return static_cast<size_type>(amt_popcount(_bitmap & ((static_cast<uint32_t>(1) << nibble) - 1)));
     }
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4146)
+#endif
+
     // index in array of values to position in bitmap
-    size_type _idx_to_pos(size_type idx)
+    size_type _idx_to_nibble(size_type idx)
     {
         uint32_t bm = _bitmap;
 
@@ -427,6 +463,11 @@ private:
         bm = (bm & -bm) - 1;
         return  static_cast<size_type>(amt_popcount(bm));
     }
+
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
     size_type _nibble(K key) const
     {
@@ -519,6 +560,8 @@ public:
             assert(!_group || _group->is_leaf());
             _set_vt(loc._key);
         }
+
+        iterator() : _group(nullptr), _idx(0) {}
 
         reference operator*() const { return _v; }
 
@@ -664,7 +707,7 @@ public:
     
     iterator end() 
     {
-        return iterator(nullptr, 0, 0); 
+        return iterator(); 
     }
 
     const_iterator begin() const  { return const_cast<amt *>(this)->begin();  }
@@ -944,8 +987,7 @@ private:
     void _erase(iterator it) 
     {
         assert(it != end());
-        
-        assert(0); //todo
+        it._group->erase(it._idx);
     }
     
     void _erase(const_iterator cit) 
