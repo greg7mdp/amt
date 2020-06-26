@@ -232,7 +232,11 @@ public:
         if (is_leaf())
             reinterpret_cast<leaf_group_ptr>(this)->swap(*reinterpret_cast<leaf_group_ptr>(grp));
         else
+        {
+            for (uint32_t i=0; i<_num_val; ++i)
+                reinterpret_cast<group_ptr>(_values[i])->_parent = grp;
             this->swap(*grp);
+        }
 
         size_type parent_nibble = _parent->_nibble(_partial_key);
         size_type parent_idx = _parent->_nibble_to_idx(parent_nibble);
@@ -279,13 +283,19 @@ public:
         }
         else
         {
-            SV *v = &_values[0];
             _bmclear(_idx_to_nibble(idx));
-            std::rotate(v + idx, v + idx + 1, v + _num_val);
             if (is_leaf())
+            {
+                V *v = reinterpret_cast<V *>(&_values[0]);
+                std::rotate(v + idx, v + idx + 1, v + _num_val);
                 (v + _num_val - 1)->~SV();
+            }
             else
-                reinterpret_cast<group_ptr>(v + _num_val - 1)->deallocate_group();
+            {
+                group_ptr *v = reinterpret_cast<group_ptr *>(&_values[0]);
+                std::rotate(v + idx, v + idx + 1, v + _num_val);
+                (v[_num_val - 1])->deallocate_group();
+            }
             --_num_val;
         }
     }
@@ -727,6 +737,17 @@ public:
     }
 
     // ------------------------------------ erase ------------------------------
+    void _erase(iterator it) // use this when you don't need the iterator to be incremented
+    {
+        assert(it != end());
+        it._group->erase(it._idx);
+    }
+    
+    void _erase(const_iterator cit) 
+    {
+        _erase(cit._it);
+    }
+    
     iterator erase(const_iterator cit)
     {
         return erase(cit._it_);
@@ -743,7 +764,7 @@ public:
         auto it = find(key);
         if (it == end()) 
             return 0;
-        erase(it);
+        _erase(it);
         return 1;
     }
 
@@ -984,17 +1005,6 @@ private:
         return loc;
     }
 
-    void _erase(iterator it) 
-    {
-        assert(it != end());
-        it._group->erase(it._idx);
-    }
-    
-    void _erase(const_iterator cit) 
-    {
-        _erase(cit._it);
-    }
-    
     friend class iterator;
 
     group_ptr      _last_insert;  // always a leaf if set
