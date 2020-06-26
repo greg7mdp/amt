@@ -662,8 +662,7 @@ public:
     
     // --------------------- constructors -----------------------------------
     amt() noexcept :
-        _last_insert(nullptr),
-        _last_lookup(nullptr),
+        _last(nullptr),
         _root(nullptr),
         _size(0)
     {
@@ -733,8 +732,11 @@ public:
 
     void clear()
     {
-        _cleanup();
-        _init();
+        if (size())
+        {
+            _cleanup();
+            _init();
+        }
     }
 
     // ------------------------------------ erase ------------------------------
@@ -744,7 +746,7 @@ public:
         if (it._group->erase(it._idx))
         {
             // a leaf group was freed
-            _last_insert = _last_lookup = nullptr;
+            _last = nullptr;
         }
         --_size;
     }
@@ -898,8 +900,7 @@ public:
     void swap(amt& o) noexcept
     {
         std::swap(_root, o._root);
-        std::swap(_last_insert, o._last_insert);
-        std::swap(_last_lookup, o._last_lookup);
+        std::swap(_last, o._last);
         std::swap(_size, o._size);
     }
 
@@ -977,44 +978,45 @@ private:
     {
         _root->deallocate_group();
         _root = nullptr;
-        _last_insert = nullptr;
-        _last_lookup = nullptr;
+        _last = nullptr;
         _size = 0;
     }
 
     locator find_impl(const key_type& k)
     {
-        bool last_matches = _last_lookup && _last_lookup->match(k);
+        bool last_matches = _last && _last->match(k);
         if (last_matches)
-            return _last_lookup->find(k);
+            return _last->find(k);
         auto loc = _root->find(k);
-        _last_lookup = loc._group;
+        _last = loc._group;
         return loc;
     }
    
-    template <class Key>
-    insert_locator insert_impl(Key&& k) 
+    insert_locator insert_impl(const key_type& k) 
     {
-        bool last_matches = _last_insert && _last_insert->match(k);
+        bool last_matches = _last && _last->match(k);
 
-        auto loc = last_matches ? _last_insert->find_or_prepare_insert(k) : _root->find_or_prepare_insert(k);
-        if (loc._created)
+        if (last_matches)
         {
-            ++_size;
+            auto loc = _last->find_or_prepare_insert(k);
+            _size += (size_type)loc._created;
+            return loc;
         }
-        if (!last_matches)
+        else
         {
-            if (_last_insert)
-                _last_insert->shrink();
-            _last_insert = loc._group;
-        }
-        return loc;
+            auto loc = _root->find_or_prepare_insert(k);
+            _size += (size_type)loc._created;
+
+            if (_last)
+                _last->shrink();
+            _last = loc._group;
+            return loc;
+        }            
     }
 
     friend class iterator;
 
-    group_ptr      _last_insert;  // always a leaf if set
-    group_ptr      _last_lookup;  // always a leaf if set
+    group_ptr      _last;  // always a leaf if set
     group_ptr      _root;  // never a leaf
     size_type      _size;
 };
