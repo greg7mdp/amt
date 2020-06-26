@@ -270,8 +270,7 @@ public:
             return { nullptr, 0, 0 };
     }
 
-    // returns try if pare
-    void _erase(uint32_t idx)
+    bool _erase(uint32_t idx)
     {
         assert(_num_val > 0 && idx < _num_val);
         if (_num_val == 1 && _parent)
@@ -280,6 +279,7 @@ public:
             size_type parent_idx = _parent->_nibble_to_idx(parent_nibble);
             assert((group_ptr)_parent->get_value(parent_idx) == this);
             _parent->_erase(parent_idx);
+            return true;
         }
         else
         {
@@ -298,12 +298,14 @@ public:
             }
             --_num_val;
         }
+        return false;
     }
 
-    void erase(uint32_t idx)
+    // returns true if a leaf group was freed
+    bool erase(uint32_t idx)
     {
         assert(is_leaf());
-        reinterpret_cast<leaf_group_ptr>(this)->_erase(idx);
+        return reinterpret_cast<leaf_group_ptr>(this)->_erase(idx);
     }
 
     insert_locator find_or_prepare_insert(K key)
@@ -739,8 +741,13 @@ public:
     // ------------------------------------ erase ------------------------------
     void _erase(iterator it) // use this when you don't need the iterator to be incremented
     {
-        assert(it != end());
-        it._group->erase(it._idx);
+        assert(it != end() && size() > 0);
+        if (it._group->erase(it._idx))
+        {
+            // a leaf group was freed
+            _last_insert = _last_lookup = nullptr;
+        }
+        --_size;
     }
     
     void _erase(const_iterator cit) 
