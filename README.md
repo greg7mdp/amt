@@ -8,9 +8,11 @@ It supports unsigned integer keys (32, 64 or 128 bits) and has been specially op
 
 - **Header only**: the file `amt.h` is all you need
 
-- **ordered container, with performance similar to hash table**
+- **ordered container**
 
-- **mostly same interface as  `std::map`**. However the value_type has both the `key` and the `value` const.
+- **very fast** -  performance similar to hash table
+
+- **mostly same interface as `std::map`**. However the value_type has both the `key` and the `value` const.
 
 - **low memory usage**
 

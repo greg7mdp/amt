@@ -195,6 +195,10 @@ public:
     {
     }
 
+    sparsegroup(const sparsegroup &) = delete;
+    sparsegroup(sparsegroup &&)      = delete;
+    ~sparsegroup()                   = delete;
+
     K        partial_key() const { return _partial_key; }
     bool     is_leaf() const     { return _depth == max_depth; }
     uint32_t depth()             { return _depth; }
@@ -433,6 +437,32 @@ public:
             // grp->construct_values();
             return (group_ptr)grp;
         }
+    }
+
+    static group_ptr allocate_group(const sparsegroup &o, group_ptr parent)
+    {
+        // copies the group and all children
+        bool leaf = (o._depth == max_depth);
+        uint32_t num_val = o._num_val;
+        group_ptr grp = allocate_group(num_val, parent, o._depth, o._partial_key);
+        grp->_bitmap = o._bitmap;
+        grp->_num_val = num_val;
+
+        if (!leaf)
+        {
+            for (uint32_t i=0; i<num_val; ++i)
+                reinterpret_cast<group_ptr&>(grp->_values[i]) = 
+                    allocate_group(reinterpret_cast<group&>(*o._values[i]), grp);
+        }
+        else
+        {
+            for (uint32_t i=0; i<num_val; ++i)
+            {
+                grp->construct_value(i);
+                grp->set_value(i, o._values[i]);
+            }
+        }
+        return grp;
     }
 
     void construct_value(uint32_t idx)
@@ -741,7 +771,11 @@ public:
 
     amt(const amt &o) : amt() 
     {
-        assert(0); //todo
+        _size = o._size;
+        if (o._root)
+            _root = group::allocate_group(*o._root, nullptr);
+        else
+            _init();
     }
 
     amt(amt &&o) noexcept : amt() 
