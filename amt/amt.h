@@ -199,6 +199,16 @@ public:
     bool     is_leaf() const     { return _depth == max_depth; }
     uint32_t depth()             { return _depth; }
     
+    K key(size_type idx) const
+    {
+        return _partial_key | _idx_to_nibble(idx);
+    }
+
+    size_type parent_idx() const
+    {
+        size_type parent_nibble = _parent->_nibble(_partial_key);
+        return _parent->_nibble_to_idx(parent_nibble);
+    }
 
     void shrink()
     {
@@ -246,10 +256,43 @@ public:
         return grp;
     }
 
+    locator end() const 
+    {
+        return { nullptr, 0, 0 };
+    }
+
     locator begin() const
     {
-        assert(0); // todo
-        return { nullptr, 0, 0 };
+        if (is_leaf())
+        {
+            assert(_num_val > 0);
+            return { const_cast<sparsegroup *>(this), key(0), 0 };
+        }
+        else if (_num_val > 0)
+        {
+            return reinterpret_cast<group_ptr>(_values[0])->begin();
+        }
+        return end();
+    }
+
+    locator next(uint32_t idx) const
+    {
+        assert(_num_val > idx);
+        ++idx;
+        if (idx < _num_val)
+        {
+            if (is_leaf())
+                return { const_cast<sparsegroup *>(this), key(idx), idx };
+            else
+                return reinterpret_cast<group_ptr>(_values[idx])->begin();
+        }
+        else
+        {
+            if (_depth > 0)
+                return _parent->next(parent_idx());
+            else
+                return end();
+        }
     }
         
     locator find(K key) const
@@ -274,10 +317,9 @@ public:
         assert(_num_val > 0 && idx < _num_val);
         if (_num_val == 1 && _parent)
         {
-            size_type parent_nibble = _parent->_nibble(_partial_key);
-            size_type parent_idx = _parent->_nibble_to_idx(parent_nibble);
-            assert((group_ptr)_parent->get_value(parent_idx) == this);
-            _parent->_erase(parent_idx);
+            size_type pidx = parent_idx();
+            assert((group_ptr)_parent->get_value(pidx) == this);
+            _parent->_erase(pidx);
             return true;
         }
         else
@@ -460,7 +502,7 @@ private:
 #endif
 
     // index in array of values to position in bitmap
-    size_type _idx_to_nibble(size_type idx)
+    size_type _idx_to_nibble(size_type idx) const
     {
         uint32_t bm = _bitmap;
 
@@ -574,13 +616,32 @@ public:
 
         iterator() : _group(nullptr), _idx(0) {}
 
-        reference operator*() const { return _v; }
+        iterator(const iterator &o) : 
+            _group(o._group), _idx(o._idx)
+        {
+            *const_cast<key_type *>(&_v.first) = o._v.first;
+            *const_cast<mapped_type *>(&_v.second) = o._v.second;
+        }
 
-        pointer operator->() const { return &operator*(); }
+        iterator& operator=(const iterator &o)
+        {
+            _group = o._group;
+            _idx = o._idx;
+            *const_cast<key_type *>(&_v.first) = o._v.first;
+            *const_cast<mapped_type *>(&_v.second) = o._v.second;   
+            return *this;
+        }
+
+        const_reference operator*() const { return _v; }
+        reference operator*() { return _v; }
+
+        const_pointer operator->() const { return &operator*(); }
+        pointer operator->() { return &operator*(); }
 
         iterator& operator++() 
         {
-            assert(0);
+            assert(_group != nullptr);
+            *this = iterator(_group->next(_idx));
             return *this;
         }
 
