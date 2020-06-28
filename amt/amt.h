@@ -47,6 +47,10 @@
 #include <type_traits>
 #include <cassert>
 
+#ifdef _MSC_VER
+    #include <intrin.h>              // for __popcnt()
+#endif
+
 namespace amt_   // internal namespace
 {
 
@@ -104,8 +108,6 @@ static inline uint32_t s_amt_popcount_default(uint64_t x) noexcept
 
 
 #elif defined _MSC_VER
-
-    #include <intrin.h>                     // for __popcnt()
 
     // I don't think we have to check!
     // #define AMT_POPCNT_CHECK  // slower when defined, but we have to check!
@@ -260,7 +262,16 @@ public:
         return grp;
     }
 
-    locator end() const 
+    group_ptr root() 
+    {
+        assert(_depth);
+        if (!_parent)
+            return this;
+        else
+            return _parent->root();
+    }
+
+    static locator end()
     {
         return { nullptr, 0, 0 };
     }
@@ -297,6 +308,10 @@ public:
             else
                 return end();
         }
+    }
+
+    locator previous(uint32_t idx) const
+    {
     }
         
     locator find(K key) const
@@ -622,6 +637,7 @@ public:
     class iterator 
     {
         friend class amt;
+        using group             = typename amt::group;
         using group_ptr         = typename amt::group_ptr;
         using leaf_group_ptr    = typename amt::leaf_group_ptr;
         using locator           = typename amt::locator;
@@ -640,25 +656,37 @@ public:
         iterator(const locator &loc) : 
             _group(loc._group), _idx(loc._idx) 
         {
-            assert(!_group || _group->is_leaf());
+            assert(_group);
             _set_vt(loc._key);
         }
 
-        iterator() : _group(nullptr), _idx(0) {}
+        iterator(group_ptr root) : 
+            _group(root), _idx(0) 
+        {
+            assert(_group && _group->depth() == 0); // creating end iterator with root
+        }
 
         iterator(const iterator &o) : 
             _group(o._group), _idx(o._idx)
         {
-            *const_cast<key_type *>(&_v.first) = o._v.first;
-            *const_cast<mapped_type *>(&_v.second) = o._v.second;
+            assert(_group);
+            if (_group->depth())
+            {
+                *const_cast<key_type *>(&_v.first) = o._v.first;
+                *const_cast<mapped_type *>(&_v.second) = o._v.second;
+            }
         }
 
         iterator& operator=(const iterator &o)
         {
+            assert(o._group);
             _group = o._group;
             _idx = o._idx;
-            *const_cast<key_type *>(&_v.first) = o._v.first;
-            *const_cast<mapped_type *>(&_v.second) = o._v.second;   
+            if (_group->depth())
+            {
+                *const_cast<key_type *>(&_v.first) = o._v.first;
+                *const_cast<mapped_type *>(&_v.second) = o._v.second; 
+            }
             return *this;
         }
 
@@ -668,10 +696,28 @@ public:
         const_pointer operator->() const { return &operator*(); }
         pointer operator->() { return &operator*(); }
 
+        iterator& operator--() 
+        {
+#if 0
+            if (_group == nullptr)
+                *this = iterator(_group->(_idx));
+#endif
+            *this = iterator(_group->previous(_idx));
+            return *this;
+        }
+
+        iterator operator--(int) 
+        {
+            auto tmp = *this;
+            --*this;
+            return tmp;
+        }
+
         iterator& operator++() 
         {
-            assert(_group != nullptr);
-            *this = iterator(_group->next(_idx));
+            assert(_group->depth());
+            auto loc = _group->next(_idx);
+            *this = loc._group ? iterator(loc) : iterator(_group->root());
             return *this;
         }
 
@@ -695,7 +741,7 @@ public:
     private:
         void _set_vt(K key)
         {
-            if (_group)
+            if (_group->depth())
             {
                 assert(_group->is_leaf());
                 *const_cast<key_type *>(&_v.first) = key;
@@ -807,12 +853,12 @@ public:
     iterator begin() 
     {
         auto loc = _root->begin();
-        return iterator(loc);
+        return loc._group ? iterator(loc) : end();
     }
     
     iterator end() 
     {
-        return iterator(); 
+        return iterator(_root); 
     }
 
     const_iterator begin() const  { return const_cast<amt *>(this)->begin();  }
@@ -1041,7 +1087,7 @@ public:
     iterator find(const key_type& key)
     {
         auto loc = find_impl(key);
-        return iterator(loc);
+        return loc._group ? iterator(loc) : end();
     }
 
     const_iterator find(const key_type& key) const
