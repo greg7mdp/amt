@@ -276,7 +276,7 @@ public:
         return { nullptr, 0, 0 };
     }
 
-    locator begin() const
+    locator first() const
     {
         if (is_leaf())
         {
@@ -285,7 +285,21 @@ public:
         }
         else if (_num_val > 0)
         {
-            return reinterpret_cast<group_ptr>(_values[0])->begin();
+            return reinterpret_cast<group_ptr>(_values[0])->first();
+        }
+        return end();
+    }
+
+    locator last() const
+    {
+        if (is_leaf())
+        {
+            assert(_num_val > 0);
+            return { const_cast<sparsegroup *>(this), key(_num_val - 1), _num_val - 1 };
+        }
+        else if (_num_val > 0)
+        {
+            return reinterpret_cast<group_ptr>(_values[_num_val - 1])->last();
         }
         return end();
     }
@@ -293,13 +307,13 @@ public:
     locator next(uint32_t idx) const
     {
         assert(_num_val > idx);
-        ++idx;
         if (idx < _num_val)
         {
+            ++idx;
             if (is_leaf())
                 return { const_cast<sparsegroup *>(this), key(idx), idx };
             else
-                return reinterpret_cast<group_ptr>(_values[idx])->begin();
+                return reinterpret_cast<group_ptr>(_values[idx])->first();
         }
         else
         {
@@ -312,6 +326,22 @@ public:
 
     locator previous(uint32_t idx) const
     {
+        // if on first element, no change
+        if (idx > 0)
+        {
+            --idx;
+            if (is_leaf())
+                return { const_cast<sparsegroup *>(this), key(idx), idx };
+            else
+                return reinterpret_cast<group_ptr>(_values[idx])->last();
+        }
+        else
+        {
+            if (_depth > 0)
+                return _parent->previous(parent_idx());
+            else
+                return first();
+        }
     }
         
     locator find(K key) const
@@ -670,7 +700,7 @@ public:
             _group(o._group), _idx(o._idx)
         {
             assert(_group);
-            if (_group->depth())
+            if (!_at_end())
             {
                 *const_cast<key_type *>(&_v.first) = o._v.first;
                 *const_cast<mapped_type *>(&_v.second) = o._v.second;
@@ -682,7 +712,7 @@ public:
             assert(o._group);
             _group = o._group;
             _idx = o._idx;
-            if (_group->depth())
+            if (!_at_end())
             {
                 *const_cast<key_type *>(&_v.first) = o._v.first;
                 *const_cast<mapped_type *>(&_v.second) = o._v.second; 
@@ -690,19 +720,21 @@ public:
             return *this;
         }
 
-        const_reference operator*() const { return _v; }
-        reference operator*() { return _v; }
+        const_reference operator*() const { assert(!_at_end()); return _v; }
+        reference operator*() { assert(!_at_end()); return _v; }
 
         const_pointer operator->() const { return &operator*(); }
         pointer operator->() { return &operator*(); }
 
         iterator& operator--() 
         {
-#if 0
-            if (_group == nullptr)
-                *this = iterator(_group->(_idx));
-#endif
-            *this = iterator(_group->previous(_idx));
+            if (_at_end())
+            {
+                auto loc = _group->last();
+                *this = loc._group ? iterator(loc) : iterator(_group->root());
+            }
+            else
+                *this = iterator(_group->previous(_idx));
             return *this;
         }
 
@@ -715,7 +747,7 @@ public:
 
         iterator& operator++() 
         {
-            assert(_group->depth());
+            assert(!_at_end());
             auto loc = _group->next(_idx);
             *this = loc._group ? iterator(loc) : iterator(_group->root());
             return *this;
@@ -739,9 +771,14 @@ public:
         }
 
     private:
+        bool _at_end() const
+        {
+            return !_group->depth();
+        }
+
         void _set_vt(K key)
         {
-            if (_group->depth())
+            if (!_at_end())
             {
                 assert(_group->is_leaf());
                 *const_cast<key_type *>(&_v.first) = key;
@@ -797,6 +834,9 @@ public:
         iterator _it;
     };
     
+    using const_reverse_iterator = std::reverse_iterator<const_iterator>;
+    using reverse_iterator       = std::reverse_iterator<iterator>;
+
     // --------------------- constructors -----------------------------------
     amt() noexcept :
         _last(nullptr),
@@ -849,10 +889,10 @@ public:
         _cleanup();
     }
 
-    // --------------------- apis ------------------------------------------
+    // --------------------- iterators ------------------------------------------
     iterator begin() 
     {
-        auto loc = _root->begin();
+        auto loc = _root->first();
         return loc._group ? iterator(loc) : end();
     }
     
@@ -866,6 +906,28 @@ public:
     const_iterator cbegin() const { return begin(); }
     const_iterator cend() const   { return end(); }
 
+    reverse_iterator rbegin()             
+    {
+        return reverse_iterator(end()); 
+    }
+
+    const_reverse_iterator rbegin() const
+    {
+        return const_reverse_iterator(end()); 
+    }
+
+    reverse_iterator rend()
+    {
+        return reverse_iterator(begin());  
+    }
+
+    const_reverse_iterator rend() const
+    {
+        return const_reverse_iterator(begin());  
+    }
+
+
+    // --------------------- apis ------------------------------------------
     bool empty() const            { return !size(); }
     size_type size() const        { return _size; }
     size_type capacity() const    { return max_size(); }
