@@ -239,7 +239,7 @@ public:
     group_ptr resize(uint32_t sz)
     {
         if (_depth == 0)
-            return nullptr; // don't resize root sparsegroup as we can't update the parent
+            return this; // don't resize root sparsegroup as we can't update the parent
         assert(sz >= _num_val);
         group_ptr grp = allocate_group(sz, _parent, _depth, _partial_key);
         grp->_bitmap = _bitmap;
@@ -611,10 +611,17 @@ private:
     static constexpr const uint32_t bm_mask  = 0xF;
     static constexpr const uint32_t max_depth = (sizeof(K) * 8) / bm_shift - 1;
     
+#if 0
     uint32_t     _bitmap : 16;
     uint32_t     _num_val : 5;
     uint32_t     _num_alloc : 5;
     uint32_t     _depth : 6;
+#else
+    uint16_t     _bitmap;
+    uint8_t      _num_val;
+    uint8_t      _num_alloc;
+    uint8_t      _depth;
+#endif
     K            _partial_key;  // only highest bits 0 -> 4 * depth are set
     group_ptr    _parent;
     SV           _values[N];
@@ -925,6 +932,7 @@ public:
     {
         return const_reverse_iterator(begin());  
     }
+
 
 
     // --------------------- apis ------------------------------------------
