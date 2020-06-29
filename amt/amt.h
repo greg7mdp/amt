@@ -773,6 +773,8 @@ public:
         const_pointer operator->() const { return &operator*(); }
         pointer operator->() { return &operator*(); }
 
+        key_type key() const { return _v.first; }
+
         iterator& operator--() 
         {
             if (_at_end())
@@ -860,12 +862,20 @@ public:
         reference operator*() const { return *_it; }
         pointer operator->() const  { return _it.operator->(); }
 
+        key_type key() const { return _it.key(); }
+
         const_iterator& operator++() 
         {
             ++_it;
             return *this;
         }
+        const_iterator& operator--() 
+        {
+            --_it;
+            return *this;
+        }
         const_iterator operator++(int) { return _it++; }
+        const_iterator operator--(int) { return _it--; }
 
         friend bool operator==(const const_iterator& a, const const_iterator& b) 
         {
