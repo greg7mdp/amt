@@ -199,13 +199,15 @@ public:
 
     sparsegroup(const sparsegroup &) = delete;
     sparsegroup(sparsegroup &&)      = delete;
+    sparsegroup& operator=(const sparsegroup &) = delete;
+    sparsegroup& operator=(sparsegroup &&)      = delete;
     ~sparsegroup()                   = delete;
 
     K        partial_key() const { return _partial_key; }
     bool     is_leaf() const     { return _depth == max_depth; }
     uint32_t depth()             { return _depth; }
     
-    K key(size_type idx) const
+    K get_key(size_type idx) const
     {
         return _partial_key | _idx_to_nibble(idx);
     }
@@ -280,7 +282,7 @@ public:
         if (is_leaf())
         {
             assert(_num_val > 0);
-            return { const_cast<sparsegroup *>(this), key(0), 0 };
+            return { const_cast<sparsegroup *>(this), get_key(0), 0 };
         }
         else if (_num_val > 0)
         {
@@ -294,7 +296,7 @@ public:
         if (is_leaf())
         {
             assert(_num_val > 0);
-            return { const_cast<sparsegroup *>(this), key(_num_val - 1), (uint32_t)(_num_val - 1) };
+            return { const_cast<sparsegroup *>(this), get_key(_num_val - 1), (uint32_t)(_num_val - 1) };
         }
         else if (_num_val > 0)
         {
@@ -310,7 +312,7 @@ public:
         if (idx < _num_val)
         {
             if (is_leaf())
-                return { const_cast<sparsegroup *>(this), key(idx), idx };
+                return { const_cast<sparsegroup *>(this), get_key(idx), idx };
             else
                 return reinterpret_cast<group_ptr>(_values[idx])->first();
         }
@@ -330,7 +332,7 @@ public:
         {
             --idx;
             if (is_leaf())
-                return { const_cast<sparsegroup *>(this), key(idx), idx };
+                return { const_cast<sparsegroup *>(this), get_key(idx), idx };
             else
                 return reinterpret_cast<group_ptr>(_values[idx])->last();
         }
@@ -369,16 +371,14 @@ public:
         {
             assert(_bmtest(n));
             uint32_t idx = _nibble_to_idx(n);
-            if (_depth == max_depth)
-                return { const_cast<sparsegroup *>(this), key, idx };
+             if (_depth == max_depth)
+                 return { const_cast<sparsegroup *>(this), get_key(idx), idx };
             else
                 return reinterpret_cast<group_ptr>(_values[idx])->find_ge(key);
         }
         else
-            return { nullptr, 0, 0 };
+            return next(_num_val - 1);
     }
-
-    
 
     bool _erase(uint32_t idx)
     {
@@ -508,7 +508,7 @@ public:
         // copies the group and all children
         bool leaf = (o._depth == max_depth);
         uint32_t num_val = o._num_val;
-        group_ptr grp = allocate_group(num_val, parent, o._depth, o._partial_key);
+        group_ptr grp = allocate_group(o._num_alloc, parent, o._depth, o._partial_key);
         grp->_bitmap = o._bitmap;
         grp->_num_val = num_val;
 
@@ -985,16 +985,19 @@ public:
         return const_cast<amt *>(this)->lower_bound(key); 
     }
 
-#if 0
     // Finds the first element whose key is > key.
     iterator upper_bound(const key_type &key) 
     {
+        auto loc = _root->find_ge(key);
+        if (loc._group && loc._group->get_key(loc._idx) == key)
+            return iterator(loc._group->next(loc._idx));
+        return iterator(loc);
     }
 
     const_iterator upper_bound(const key_type &key) const
     {
+        return const_cast<amt *>(this)->upper_bound(key); 
     }
-#endif
 
 
 
