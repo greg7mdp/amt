@@ -773,7 +773,7 @@ public:
         const_pointer operator->() const { return &operator*(); }
         pointer operator->() { return &operator*(); }
 
-        key_type key() const { return _v.first; }
+        const key_type& key() const { return _v.first; }
 
         iterator& operator--() 
         {
@@ -862,7 +862,7 @@ public:
         reference operator*() const { return *_it; }
         pointer operator->() const  { return _it.operator->(); }
 
-        key_type key() const { return _it.key(); }
+        const key_type& key() const { return _it.key(); }
 
         const_iterator& operator++() 
         {
