@@ -264,7 +264,6 @@ public:
 
     group_ptr root() 
     {
-        assert(_depth);
         if (!_parent)
             return this;
         else
@@ -295,7 +294,7 @@ public:
         if (is_leaf())
         {
             assert(_num_val > 0);
-            return { const_cast<sparsegroup *>(this), key(_num_val - 1), _num_val - 1 };
+            return { const_cast<sparsegroup *>(this), key(_num_val - 1), (uint32_t)(_num_val - 1) };
         }
         else if (_num_val > 0)
         {
@@ -307,9 +306,9 @@ public:
     locator next(uint32_t idx) const
     {
         assert(_num_val > idx);
+        ++idx;
         if (idx < _num_val)
         {
-            ++idx;
             if (is_leaf())
                 return { const_cast<sparsegroup *>(this), key(idx), idx };
             else
@@ -360,6 +359,26 @@ public:
         else
             return { nullptr, 0, 0 };
     }
+
+        
+    locator find_ge(K key) const
+    {
+        size_type n = _nibble_to_ge_nibble(_nibble(key));
+
+        if (n < nibble_max) 
+        {
+            assert(_bmtest(n));
+            uint32_t idx = _nibble_to_idx(n);
+            if (_depth == max_depth)
+                return { const_cast<sparsegroup *>(this), key, idx };
+            else
+                return reinterpret_cast<group_ptr>(_values[idx])->find_ge(key);
+        }
+        else
+            return { nullptr, 0, 0 };
+    }
+
+    
 
     bool _erase(uint32_t idx)
     {
@@ -557,6 +576,26 @@ private:
     void _bmset(size_type i)          { _bitmap |= static_cast<uint32_t>(1) << i; }
     void _bmclear(size_type i)        { _bitmap &= ~(static_cast<uint32_t>(1) << i); }
 
+    // count trailing zeroes
+    static uint32_t _ctz32(uint32_t v)
+    {
+        unsigned int c = 32; // c will be the number of zero bits on the right
+        v &= -signed(v);
+        if (v) c--;
+        if (v & 0x0000FFFF) c -= 16;
+        if (v & 0x00FF00FF) c -= 8;
+        if (v & 0x0F0F0F0F) c -= 4;
+        if (v & 0x33333333) c -= 2;
+        if (v & 0x55555555) c -= 1;
+        return c;
+    }
+
+    uint32_t _nibble_to_ge_nibble(size_type nibble) const
+    {
+        uint16_t bm = _bitmap & ~((static_cast<uint16_t>(1) << nibble) - 1);
+        return _ctz32(bm);
+    }
+
     template <class Val>
     static size_t group_size_in_bytes(uint32_t cnt)   
     {
@@ -610,6 +649,7 @@ private:
     static constexpr const uint32_t bm_shift = 4;
     static constexpr const uint32_t bm_mask  = 0xF;
     static constexpr const uint32_t max_depth = (sizeof(K) * 8) / bm_shift - 1;
+    static constexpr const uint32_t nibble_max = 16;
     
 #if 0
     uint32_t     _bitmap : 16;
@@ -932,6 +972,29 @@ public:
     {
         return const_reverse_iterator(begin());  
     }
+
+    // Finds the first element whose key is >= key.
+    iterator lower_bound(const key_type &key) 
+    {
+        auto loc = _root->find_ge(key);
+        return loc._group ? iterator(loc) : end();
+    }
+
+    const_iterator lower_bound(const key_type &key) const
+    {
+        return const_cast<amt *>(this)->lower_bound(key); 
+    }
+
+#if 0
+    // Finds the first element whose key is > key.
+    iterator upper_bound(const key_type &key) 
+    {
+    }
+
+    const_iterator upper_bound(const key_type &key) const
+    {
+    }
+#endif
 
 
 
