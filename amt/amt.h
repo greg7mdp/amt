@@ -207,11 +207,6 @@ public:
     bool     is_leaf() const     { return _depth == max_depth; }
     uint32_t depth()             { return _depth; }
     
-    K get_key(size_type idx) const
-    {
-        return _partial_key | _idx_to_nibble(idx);
-    }
-
     size_type parent_idx() const
     {
         size_type parent_nibble = _parent->_nibble(_partial_key);
@@ -465,6 +460,11 @@ public:
     {
         assert(_depth == max_depth); // we are matching only leaf groups
         return (key & ~bm_mask) == _partial_key;
+    }
+
+    K get_key(size_type idx) const
+    {
+        return _partial_key | _idx_to_nibble(idx);
     }
 
     template <class Val>
