@@ -1276,6 +1276,7 @@ private:
             return _last->find(k);
         auto loc = _root->find(k);
         _last = loc._group;
+        assert(!_last || _last->match(k));
         return loc;
     }
    
@@ -1287,6 +1288,7 @@ private:
         {
             auto loc = _last->find_or_prepare_insert(k);
             _size += (size_type)loc._created;
+            _last = loc._group; // in case _last was resized (after a shrink)
             return loc;
         }
         else
@@ -1297,6 +1299,7 @@ private:
             if (_last)
                 _last->shrink();
             _last = loc._group;
+            assert(!_last || _last->match(k));
             return loc;
         }            
     }
