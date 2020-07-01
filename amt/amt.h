@@ -988,6 +988,8 @@ public:
     // Finds the first element whose key is >= key.
     iterator lower_bound(const key_type &key) 
     {
+        if (_size == 0)
+            return end();
         auto loc = _root->find_ge(key);
         return _iter(loc);
     }
@@ -1000,6 +1002,8 @@ public:
     // Finds the first element whose key is > key.
     iterator upper_bound(const key_type &key) 
     {
+        if (_size == 0)
+            return end();
         auto loc = _root->find_ge(key);
         if (loc._group && loc._group->get_key(loc._idx) == key)
         {
