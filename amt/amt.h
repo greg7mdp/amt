@@ -218,7 +218,9 @@ public:
         assert(is_leaf() && _parent);
         if (_num_alloc - _num_val <= 1)
             return;
-        resize(_num_val);
+        uint32_t new_size = (_num_val + 1) & ~0x1;
+        if (_num_alloc > new_size)
+            resize(new_size);
     }
 
     void swap(sparsegroup &o)
