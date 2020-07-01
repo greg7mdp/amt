@@ -362,19 +362,31 @@ public:
         
     locator find_ge(K key) const
     {
-        size_type n = _nibble_to_ge_nibble(_nibble(key));
+        size_type nkey = _nibble(key);
+        if (_bmtest(nkey))
+        {
+            uint32_t idx = _nibble_to_idx(nkey);
+            if (_depth == max_depth)
+                 return { const_cast<sparsegroup *>(this), get_key(idx), idx };
+             else
+             {
+                 auto loc = reinterpret_cast<group_ptr>(_values[idx])->find_ge(key);
+                 if (loc._group)
+                     return loc;
+             }
+        }
 
+        size_type n = _nibble_to_ge_nibble(nkey);
         if (n < nibble_max) 
         {
             assert(_bmtest(n));
             uint32_t idx = _nibble_to_idx(n);
-             if (_depth == max_depth)
-                 return { const_cast<sparsegroup *>(this), get_key(idx), idx };
-            else
-                return reinterpret_cast<group_ptr>(_values[idx])->find_ge(key);
+            if (_depth == max_depth)
+                return { const_cast<sparsegroup *>(this), get_key(idx), idx };
+            return reinterpret_cast<group_ptr>(_values[idx])->first();
         }
-        else
-            return next(_num_val - 1);
+
+        return { nullptr, 0, 0 };
     }
 
     bool _erase(uint32_t idx)
@@ -387,7 +399,7 @@ public:
             _parent->_erase(pidx);
             return true;
         }
-        else
+        else if (_num_val)
         {
             _bmclear(_idx_to_nibble(idx));
             if (is_leaf())
