@@ -950,7 +950,7 @@ public:
     iterator begin() 
     {
         auto loc = _root->first();
-        return loc._group ? iterator(loc) : end();
+        return _iter(loc);
     }
     
     iterator end() 
@@ -987,7 +987,7 @@ public:
     iterator lower_bound(const key_type &key) 
     {
         auto loc = _root->find_ge(key);
-        return loc._group ? iterator(loc) : end();
+        return _iter(loc);
     }
 
     const_iterator lower_bound(const key_type &key) const
@@ -1000,8 +1000,11 @@ public:
     {
         auto loc = _root->find_ge(key);
         if (loc._group && loc._group->get_key(loc._idx) == key)
-            return iterator(loc._group->next(loc._idx));
-        return iterator(loc);
+        {
+            auto next_loc = loc._group->next(loc._idx);
+            return _iter(next_loc);
+        }
+        return _iter(loc);
     }
 
     const_iterator upper_bound(const key_type &key) const
@@ -1233,7 +1236,7 @@ public:
     iterator find(const key_type& key)
     {
         auto loc = find_impl(key);
-        return loc._group ? iterator(loc) : end();
+        return _iter(loc);
     }
 
     const_iterator find(const key_type& key) const
@@ -1255,6 +1258,11 @@ public:
     key_equal key_eq() const { return std::equal_to<K>(); }
 
 private:
+    iterator _iter(const locator &loc)
+    {
+        return loc._group ? iterator(loc) : end();
+    }
+
     void _init()
     {
         assert(_root == nullptr);
