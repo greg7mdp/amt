@@ -350,7 +350,7 @@ public:
         {
             // found it
             uint32_t idx = _nibble_to_idx(n);
-            if (_depth == max_depth)
+            if (is_leaf())
                 return { const_cast<sparsegroup *>(this), key, idx };
             else
                 return reinterpret_cast<group_ptr>(_values[idx])->find(key);
@@ -366,7 +366,7 @@ public:
         if (_bmtest(nkey))
         {
             uint32_t idx = _nibble_to_idx(nkey);
-            if (_depth == max_depth)
+            if (is_leaf())
                  return { const_cast<sparsegroup *>(this), get_key(idx), idx };
              else
              {
@@ -374,18 +374,19 @@ public:
                  if (loc._group)
                      return loc;
              }
-        }
+        } 
 
         size_type n = _nibble_to_ge_nibble(nkey);
         if (n < nibble_max) 
         {
             assert(_bmtest(n));
             uint32_t idx = _nibble_to_idx(n);
-            if (_depth == max_depth)
+            if (is_leaf())
                 return { const_cast<sparsegroup *>(this), get_key(idx), idx };
             return reinterpret_cast<group_ptr>(_values[idx])->first();
-        }
-
+        } else 
+            return next(_num_val - 1);
+        
         return { nullptr, 0, 0 };
     }
 
